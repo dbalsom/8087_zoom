@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Microcode Deep‑Zoom Viewer</title>
+  <title>Microcode Deep-Zoom Viewer</title>
   <style>
     html, body { height: 100%; margin: 0; background: #0b0d10; color: #e6e6e6; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif; }
     header { position: fixed; top: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; padding: 0 12px; gap: 10px; background: rgba(20,22,26,0.9); border-bottom: 1px solid #20242a; z-index: 2; }
@@ -14,15 +14,26 @@
     header .controls button:hover, header .controls label:hover, header .controls a:hover { background: #1f2935; }
     #viewer { position: absolute; inset: 48px 0 0 0; }
     .osd-overlay { position: absolute; pointer-events: none; }
-    .hud { position: fixed; bottom: 12px; left: 12px; background: rgba(15,17,20,0.85); border: 1px solid #2a2f36; border-radius: 10px; padding: 8px 10px; font-size: 12px; line-height: 1.35; }
+    .hud, .legend { position: fixed; background: rgba(15,17,20,0.85); border: 1px solid #2a2f36; border-radius: 10px; padding: 8px 10px; font-size: 12px; line-height: 1.35; z-index: 3; }
+    .hud { bottom: 12px; left: 12px; }
     .hud code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
-    .notice { position: fixed; right: 12px; bottom: 12px; font-size: 12px; color: #a0a9b4; }
+    .legend { bottom: 84px; left: 12px; max-width: 280px; max-height: 36vh; overflow: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.45); z-index: 10; }
+    .legend h2 { margin: 0 0 6px 0; font-size: 12px; font-weight: 700; color: #cfe8ff; letter-spacing: 0.2px; }
+    .legend ul { margin: 6px 0; padding-left: 18px; }
+    .legend li { margin: 4px 0; }
+    .legend a { color: #89b4ff; text-decoration: underline; }
+    .legend.hidden { display: none; }
+    .context-menu { position: fixed; z-index: 9999; background: rgba(18,20,24,0.98); border: 1px solid #2a2f36; border-radius: 10px; min-width: 220px; padding: 6px; box-shadow: 0 10px 24px rgba(0,0,0,0.5); }
+    .context-menu.hidden { display: none; }
+    .context-menu button { display: block; width: 100%; text-align: left; background: transparent; border: none; color: #e6e6e6; padding: 8px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+    .context-menu button:hover { background: #1f2935; }
+    .notice { position: fixed; right: 12px; bottom: 12px; font-size: 12px; color: #a0a9b4; z-index: 3; }
   </style>
   <script src="https://unpkg.com/openseadragon@4.1/build/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>Microcode Deep‑Zoom Viewer</h1>
+    <h1>Microcode Deep-Zoom Viewer</h1>
     <div class="controls">
       <a href="https://github.com/dbalsom/8087_zoom/issues" target="_blank" title="Report an issue on GitHub">Report Issue</a>
       <label title="Paste a .dzi URL or relative path, then Load">DZI:
@@ -30,13 +41,32 @@
       </label>
       <button id="loadBtn" title="Load the specified Deep Zoom Image (DZI)">Load</button>
       <button id="homeBtn" title="Reset view to home">Home</button>
-      <button id="gridBtn" title="Toggle overlay grid (power‑of‑two spacing)">Grid</button>
+      <button id="gridBtn" title="Toggle overlay grid (power-of-two spacing)">Grid</button>
       <button id="copyBtn" title="Copy current XY / zoom to clipboard">Copy View</button>
+      <button id="legendBtn" title="Toggle legend overlay">Legend</button>
     </div>
   </header>
   <div id="viewer"></div>
+
+  <!-- Legend overlay -->
+  <aside class="legend" aria-label="Legend">
+    <h2>Legend</h2>
+    <ul>
+      <li>Large circle: <strong>Large Transistor</strong></li>
+      <li>Medium square: <strong>Medium Transistor</strong></li>
+      <li>Smaller rectangle: <strong>Small Transistor</strong></li>
+      <li>Nothing: <strong>No transistor</strong></li>
+    </ul>
+    <div>See something miscategorized? <strong>Right click on the canvas to report it!</strong></div>
+  </aside>
+
   <div class="hud" id="hud">⟂ <strong>Cursor</strong> <code id="ptPx">x=—, y=—</code> | <strong>Zoom</strong> <code id="zoom">—</code></div>
-  <div class="notice">Wheel to zoom · drag to pan · shift+drag to zoom‑box</div>
+  <div class="notice">Wheel to zoom · drag to pan · shift+drag to zoom-box</div>
+
+  <!-- Right-click context menu for reporting -->
+  <div id="reportMenu" class="context-menu hidden" role="menu" aria-label="Context menu">
+    <button id="reportHereBtn" role="menuitem">Report misclassification here</button>
+  </div>
 
   <script>
     const Hash = {
@@ -72,8 +102,16 @@
     const homeBtn = document.getElementById('homeBtn');
     const gridBtn = document.getElementById('gridBtn');
     const copyBtn = document.getElementById('copyBtn');
+    const legendBtn = document.getElementById('legendBtn');
+    const reportMenu = document.getElementById('reportMenu');
+    const reportHereBtn = document.getElementById('reportHereBtn');
     const ptPx = document.getElementById('ptPx');
     const zoomEl = document.getElementById('zoom');
+    let lastReportXY = null;
+
+    legendBtn?.addEventListener('click', () => {
+      document.querySelector('.legend')?.classList.toggle('hidden');
+    });
 
     let gridOverlay = null;
 
@@ -146,14 +184,6 @@
       }
     }
 
-    viewer.addHandler('canvas-scroll', () => setTimeout(drawGrid, 0));
-    viewer.addHandler('canvas-drag', () => setTimeout(drawGrid, 0));
-    viewer.addHandler('animation', () => setTimeout(drawGrid, 0));
-    viewer.addHandler('update-viewport', () => {
-      const z = viewer.viewport?.getZoom(true) ?? 0;
-      zoomEl.textContent = z.toFixed(3);
-    });
-
     viewer.addHandler('open', () => {
       const h = Hash.parse();
       if (h.x && h.y && h.z) {
@@ -161,7 +191,44 @@
       } else {
         viewer.viewport.goHome(true);
       }
+      const canvas = viewer.canvas;
+      if (canvas && !canvas.__reportMenuBound) {
+        canvas.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          if (!viewer.source) return;
+          const webPoint = new OpenSeadragon.Point(ev.offsetX, ev.offsetY);
+          const viewportPoint = viewer.viewport.pointFromPixel(webPoint);
+          const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+          lastReportXY = { x: Math.floor(imagePoint.x), y: Math.floor(imagePoint.y) };
+          reportMenu.style.left = `${ev.clientX}px`;
+          reportMenu.style.top = `${ev.clientY}px`;
+          reportMenu.classList.remove('hidden');
+        });
+        canvas.__reportMenuBound = true;
+      }
     });
+
+    function openIssueAt(ix, iy) {
+      const base = 'https://github.com/dbalsom/8087_zoom/issues/new';
+      const params = new URLSearchParams();
+      params.set('title', `misclassified bit at ${ix}x${iy}`);
+      const body = `Location: x=${ix}, y=${iy}\nView: ${location.href}`;
+      params.set('body', body);
+      const url = `${base}?${params.toString()}`;
+      window.open(url, '_blank');
+    }
+
+    reportHereBtn.addEventListener('click', () => {
+      if (lastReportXY) openIssueAt(lastReportXY.x, lastReportXY.y);
+      reportMenu.classList.add('hidden');
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!reportMenu.classList.contains('hidden') && !reportMenu.contains(e.target)) {
+        reportMenu.classList.add('hidden');
+      }
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') reportMenu.classList.add('hidden'); });
 
     viewer.addHandler('canvas-enter', () => viewer.canvas.addEventListener('mousemove', mouseMove));
     viewer.addHandler('canvas-exit', () => viewer.canvas.removeEventListener('mousemove', mouseMove));
