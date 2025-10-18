@@ -28,6 +28,7 @@
     .context-menu button { display: block; width: 100%; text-align: left; background: transparent; border: none; color: #e6e6e6; padding: 8px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; }
     .context-menu button:hover { background: #1f2935; }
     .notice { position: fixed; right: 12px; bottom: 12px; font-size: 12px; color: #a0a9b4; z-index: 3; }
+    .notice a { color: #89b4ff; text-decoration: underline; }
   </style>
   <script src="https://unpkg.com/openseadragon@4.1/build/openseadragon/openseadragon.min.js"></script>
 </head>
@@ -61,7 +62,7 @@
   </aside>
 
   <div class="hud" id="hud">⟂ <strong>Cursor</strong> <code id="ptPx">x=—, y=—</code> | <strong>Zoom</strong> <code id="zoom">—</code></div>
-  <div class="notice">Wheel to zoom · drag to pan · shift+drag to zoom-box</div>
+  <div class="notice">Wheel to zoom · drag to pan · shift+drag to zoom-box<br>Powered by <a href='https://openseadragon.github.io/' target='_blank'>OpenSeadragon</a></div>
 
   <!-- Right-click context menu for reporting -->
   <div id="reportMenu" class="context-menu hidden" role="menu" aria-label="Context menu">
