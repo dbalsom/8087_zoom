@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Microcode Deep‑Zoom Viewer</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0d10; color: #e6e6e6; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif; }
+    header { position: fixed; top: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; padding: 0 12px; gap: 10px; background: rgba(20,22,26,0.9); border-bottom: 1px solid #20242a; z-index: 2; }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; color: #b5e2ff; letter-spacing: 0.2px; }
+    header .controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+    header .controls input[type="text"] { width: 22ch; background: #0f1216; color: #e6e6e6; border: 1px solid #2a2f36; border-radius: 8px; padding: 6px 8px; font-size: 12px; }
+    header .controls button, header .controls label { font-size: 12px; background: #18202a; color: #d8dee9; border: 1px solid #2a3542; border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+    header .controls button:hover, header .controls label:hover { background: #1f2935; }
+    #viewer { position: absolute; inset: 48px 0 0 0; }
+    .osd-overlay { position: absolute; pointer-events: none; }
+    .hud { position: fixed; bottom: 12px; left: 12px; background: rgba(15,17,20,0.85); border: 1px solid #2a2f36; border-radius: 10px; padding: 8px 10px; font-size: 12px; line-height: 1.35; }
+    .hud code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .notice { position: fixed; right: 12px; bottom: 12px; font-size: 12px; color: #a0a9b4; }
+  </style>
+  <!-- OpenSeadragon (Deep Zoom) from a reputable CDN -->
+  <script src="https://unpkg.com/openseadragon@4.1/build/openseadragon/openseadragon.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Microcode Deep‑Zoom Viewer</h1>
+    <div class="controls">
+      <label title="Paste a .dzi URL or relative path, then Load">DZI:
+        <input id="dziInput" type="text" placeholder="tiles/tiles.dzi" value="tiles/tiles.dzi" />
+      </label>
+      <button id="loadBtn" title="Load the specified Deep Zoom Image (DZI)">Load</button>
+      <button id="homeBtn" title="Reset view to home">Home</button>
+      <button id="gridBtn" title="Toggle overlay grid (power‑of‑two spacing)">Grid</button>
+      <button id="copyBtn" title="Copy current XY / zoom to clipboard">Copy View</button>
+    </div>
+  </header>
+  <div id="viewer"></div>
+  <div class="hud" id="hud">⟂ <strong>Cursor</strong> <code id="ptPx">x=—, y=—</code> | <strong>Zoom</strong> <code id="zoom">—</code></div>
+  <div class="notice">Wheel to zoom · drag to pan · shift+drag to zoom‑box</div>
+
+  <script>
+    // --- Helper: read & write URL hash for shareable deep links ---
+    const Hash = {
+      parse() {
+        const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+        return {
+          dzi: h.get('dzi') || null,
+          x: parseFloat(h.get('x')),
+          y: parseFloat(h.get('y')),
+          z: parseFloat(h.get('z')),
+        };
+      },
+      write(state) {
+        const h = new URLSearchParams();
+        if (state.dzi) h.set('dzi', state.dzi);
+        if (!Number.isNaN(state.x)) h.set('x', String(state.x.toFixed(6)));
+        if (!Number.isNaN(state.y)) h.set('y', String(state.y.toFixed(6)));
+        if (!Number.isNaN(state.z)) h.set('z', String(state.z.toFixed(4)));
+        const newHash = '#' + h.toString();
+        if (location.hash !== newHash) history.replaceState(null, '', newHash);
+      },
+    };
+
+    // --- OpenSeadragon setup ---
+    const viewer = OpenSeadragon({
+      id: 'viewer',
+      prefixUrl: 'https://unpkg.com/openseadragon@4.1/build/openseadragon/images/',
+      showNavigator: true,
+      maxZoomPixelRatio: 4, // allows crisp pixel peeping
+      visibilityRatio: 1.0,
+      constrainDuringPan: true,
+      showRotationControl: true,
+      gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true, dragToPan: true },
+      zoomPerScroll: 1.25,
+    });
+
+    const dziInput = document.getElementById('dziInput');
+    const loadBtn = document.getElementById('loadBtn');
+    const homeBtn = document.getElementById('homeBtn');
+    const gridBtn = document.getElementById('gridBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const ptPx = document.getElementById('ptPx');
+    const zoomEl = document.getElementById('zoom');
+
+    let gridOverlay = null;
+
+    function loadDZI(url) {
+      viewer.open(url);
+      Hash.write({ ...Hash.parse(), dzi: url });
+    }
+
+    loadBtn.addEventListener('click', () => loadDZI(dziInput.value.trim()));
+    homeBtn.addEventListener('click', () => viewer.viewport.goHome(true));
+
+    copyBtn.addEventListener('click', async () => {
+      if (!viewer.source) return;
+      const center = viewer.viewport.getCenter();
+      const zoom = viewer.viewport.getZoom(true);
+      const next = { ...Hash.parse(), dzi: dziInput.value.trim(), x: center.x, y: center.y, z: zoom };
+      Hash.write(next);
+      try {
+        await navigator.clipboard.writeText(location.href);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => (copyBtn.textContent = 'Copy View'), 1200);
+      } catch {}
+    });
+
+    // Overlay grid (power-of-two step in image coords)
+    gridBtn.addEventListener('click', () => {
+      if (gridOverlay) {
+        viewer.removeOverlay(gridOverlay);
+        gridOverlay.remove();
+        gridOverlay = null;
+        return;
+      }
+      gridOverlay = document.createElement('canvas');
+      gridOverlay.className = 'osd-overlay';
+      viewer.addOverlay({ element: gridOverlay, location: viewer.viewport.getBounds(true) });
+      drawGrid();
+    });
+
+    function drawGrid() {
+      if (!gridOverlay || !viewer.source) return;
+      // Match overlay to current viewport bounds (image coordinates)
+      const bounds = viewer.viewport.getBounds(true);
+      const imgSize = viewer.source.dimensions || { x: viewer.source.width, y: viewer.source.height };
+      const pxW = Math.round(window.innerWidth);
+      const pxH = Math.round(window.innerHeight - 48);
+      gridOverlay.width = pxW; gridOverlay.height = pxH;
+      // Position overlay to current bounds
+      const overlayPlacement = bounds.clone();
+      viewer.updateOverlay(gridOverlay, overlayPlacement);
+      const ctx = gridOverlay.getContext('2d');
+      ctx.clearRect(0,0,pxW,pxH);
+      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(91, 155, 213, 0.35)';
+
+      // Choose a grid step in image pixels (powers of two) so that on-screen spacing ~ 128px
+      const target = 128;
+      const scale = viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(bounds.x + 1, bounds.y))
+                      .x - viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(bounds.x, bounds.y)).x;
+      let step = 1;
+      while (step * scale < target) step <<= 1; // 1,2,4,8,...
+
+      const x0 = Math.max(0, Math.floor(bounds.x / step) * step);
+      const y0 = Math.max(0, Math.floor(bounds.y / step) * step);
+      const x1 = Math.min(imgSize.x, Math.ceil((bounds.x + bounds.width) / step) * step);
+      const y1 = Math.min(imgSize.y, Math.ceil((bounds.y + bounds.height) / step) * step);
+
+      // Draw verticals
+      for (let x = x0; x <= x1; x += step) {
+        const p0 = viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(x, bounds.y));
+        const p1 = viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(x, bounds.y + bounds.height));
+        ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+      }
+      // Draw horizontals
+      for (let y = y0; y <= y1; y += step) {
+        const p0 = viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(bounds.x, y));
+        const p1 = viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(bounds.x + bounds.width, y));
+        ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+      }
+    }
+
+    // Live HUD for cursor (image pixel coords) & zoom
+    viewer.addHandler('canvas-scroll', () => setTimeout(drawGrid, 0));
+    viewer.addHandler('canvas-drag', () => setTimeout(drawGrid, 0));
+    viewer.addHandler('animation', () => setTimeout(drawGrid, 0));
+    viewer.addHandler('update-viewport', () => {
+      const z = viewer.viewport?.getZoom(true) ?? 0;
+      zoomEl.textContent = z.toFixed(3);
+    });
+
+    viewer.addHandler('open', () => {
+      // If hash contains center/zoom, restore it
+      const h = Hash.parse();
+      if (h.x && h.y && h.z) {
+        viewer.viewport.zoomTo(h.z, new OpenSeadragon.Point(h.x, h.y), true);
+      } else {
+        viewer.viewport.goHome(true);
+      }
+    });
+
+    // Track mouse over image and display image pixel coords
+    viewer.addHandler('canvas-enter', () => viewer.canvas.addEventListener('mousemove', mouseMove));
+    viewer.addHandler('canvas-exit', () => viewer.canvas.removeEventListener('mousemove', mouseMove));
+
+    function mouseMove(ev) {
+      if (!viewer.source) { ptPx.textContent = 'x=—, y=—'; return; }
+      const webPoint = new OpenSeadragon.Point(ev.offsetX, ev.offsetY);
+      const viewportPoint = viewer.viewport.pointFromPixel(webPoint);
+      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+      ptPx.textContent = `x=${Math.floor(imagePoint.x)}, y=${Math.floor(imagePoint.y)}`;
+    }
+
+    // Boot: load DZI from hash or default input value
+    (function init() {
+      const h = Hash.parse();
+      const startDzi = h.dzi || dziInput.value.trim();
+      dziInput.value = startDzi;
+      loadDZI(startDzi);
+    })();
+  </script>
+</body>
+</html>
